@@ -23,11 +23,16 @@ def im2col_manual_jax(x, KH, KW, S, P, out_h, out_w):
     # Pad input
     x_pad = jnp.pad(x, ((0,0),(0,0),(P,P),(P,P)))
 
-    # TO DO: Convert input (x) into shape (N, out_h*out_w, C*KH*KW). 
-    # Refer to Lecture 3 for implementing this operation.
-    
-    # patches = ...
-    # return patches
+    patches = []
+    for kh in range(KH):
+        for kw in range(KW):
+            patch = x_pad[:, :, kh : kh + out_h * S : S, kw : kw + out_w * S : S]
+            patches.append(patch)
+
+    stacked = jnp.stack(patches, axis=2)
+    permuted = jnp.transpose(stacked, (0, 3, 4, 1, 2))
+    cols = permuted.reshape(N, out_h * out_w, C * KH * KW)
+    return cols
 
 def conv2d_manual_jax(x, weight, bias, stride=1, padding=1):
     '''
