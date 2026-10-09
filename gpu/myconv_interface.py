@@ -1,4 +1,5 @@
 import torch
+from torch.profiler import profile, record_function, ProfilerActivity
 from torch.utils.cpp_extension import load
 
 # Compile and load CUDA extension
@@ -24,3 +25,10 @@ out_ref = torch.nn.functional.conv2d(x, w, stride=stride, padding=pad)
 # Test shape and correctness
 print("CUDA --- shape check:", out_custom.shape == out_ref.shape)
 print("CUDA --- correctness check:", torch.allclose(out_custom, out_ref, atol=1e-4))
+
+torch.cuda.synchronize()
+with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+    with record_function("conv"):
+        out_custom = conv_module.conv_cuda(x, w, stride, pad)
+    torch.cuda.synchronize()
+prof.export_chrome_trace("cuda_trace.json")
