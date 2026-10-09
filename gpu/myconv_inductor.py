@@ -15,16 +15,18 @@ if __name__ == "__main__":
 
     # Torch-Inductor compilation
     scripted_model = torch.compile(model, backend="inductor")
-    out = scripted_model(x)
-    
+
+    torch.cuda.synchronize()
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        with record_function("compile"):
+            out = scripted_model(x)
+            torch.cuda.synchronize()
+        with record_function("conv"):
+            out = scripted_model(x)
+            torch.cuda.synchronize()
+    prof.export_chrome_trace("inductor_trace.json")
+
     # Test your solution
     conv_ref = F.conv2d(x, model.weight, model.bias, stride=1, padding=1)
     print("Inductor --- shape check:", out.shape == conv_ref.shape)
     print("Inductor --- correctness check:", torch.allclose(out, conv_ref, atol=1e-4))
-
-    torch.cuda.synchronize()
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
-        with record_function("conv"):
-            out = scripted_model(x)
-        torch.cuda.synchronize()
-    prof.export_chrome_trace("inductor_trace.json")
