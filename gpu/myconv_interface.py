@@ -8,8 +8,8 @@ conv_module = load(name="myconv",
                      verbose=True)
 
 # Input parameters
-N, C_in, H, W = 4, 3, 25, 25
-C_out, KH, KW = 4, 3, 3
+N, C_in, H, W = 4, 3, 49, 49
+C_out, KH, KW = 4, 6, 6
 stride, pad = 1, 1
 
 # Allocate tensors
