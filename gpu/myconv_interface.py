@@ -4,7 +4,7 @@ from torch.utils.cpp_extension import load
 
 # Input parameters
 N, C_in, H, W = 4, 3, 25, 25
-C_out, KH, KW = 4, 3, 3
+C_out, KH, KW = 4, 6, 6
 stride, pad = 1, 1
 
 # Allocate tensors
