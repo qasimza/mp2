@@ -96,7 +96,7 @@ if __name__ == "__main__":
     device = "cuda"
     x = torch.randn(N, C, H, W, device=device)
     out_channels=4
-    kernel_size=3
+    kernel_size=6
     model = ConvModel(H, W, C, out_channels, kernel_size, stride=1, padding=1).to(device)
     out = model(x)
 

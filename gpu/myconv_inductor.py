@@ -11,7 +11,7 @@ if __name__ == "__main__":
     N, C, H, W = 4, 3, 49, 49
     x = torch.randn(N, C, H, W).cuda()
 
-    model = ConvModel(H, W, in_channels=3, out_channels=4, kernel_size=3, stride=1, padding=1).cuda().eval()
+    model = ConvModel(H, W, in_channels=3, out_channels=4, kernel_size=6, stride=1, padding=1).cuda().eval()
 
     # Torch-Inductor compilation
     scripted_model = torch.compile(model, backend="inductor")
