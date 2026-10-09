@@ -103,14 +103,14 @@ if __name__ == "__main__":
     # enable JIT compilation
     conv2d_manual_jax_jit = jit(conv2d_manual_jax)
 
-    # call your JAX function
-    out_jax = conv2d_manual_jax_jit(x_jax, weight_jax, bias_jax)
+    jax.profiler.start_trace(logdir)
+    with jax.profiler.TraceAnnotation("compile"):
+        out_jax = conv2d_manual_jax_jit(x_jax, weight_jax, bias_jax).block_until_ready()
+    with jax.profiler.TraceAnnotation("conv"):
+        out_jax = conv2d_manual_jax_jit(x_jax, weight_jax, bias_jax).block_until_ready()
+    jax.profiler.stop_trace()
 
     # Test your solution
     conv_ref = F.conv2d(x_torch, model.weight, model.bias, stride=1, padding=1)
     print("JAX --- shape check:", out_jax.shape == conv_ref.shape)
     print("JAX --- correctness check:", torch.allclose(torch.from_numpy(np.array(out_jax)), conv_ref, atol=1e-1))
-
-    jax.profiler.start_trace(logdir)
-    out_jax = conv2d_manual_jax_jit(x_jax, weight_jax, bias_jax).block_until_ready()
-    jax.profiler.stop_trace()
