@@ -3,7 +3,7 @@ from torch.profiler import profile, record_function, ProfilerActivity
 from torch.utils.cpp_extension import load
 
 # Input parameters
-N, C_in, H, W = 4, 3, 49, 49
+N, C_in, H, W = 4, 3, 25, 25
 C_out, KH, KW = 4, 3, 3
 stride, pad = 1, 1
 

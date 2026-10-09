@@ -8,7 +8,7 @@ if __name__ == "__main__":
     torch.manual_seed(0)
 
     # Instantiate your PyTorch model
-    N, C, H, W = 4, 3, 49, 49
+    N, C, H, W = 4, 3, 25, 25
     x = torch.randn(N, C, H, W).cuda()
 
     model = ConvModel(H, W, in_channels=3, out_channels=4, kernel_size=3, stride=1, padding=1).cuda().eval()

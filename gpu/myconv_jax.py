@@ -82,7 +82,7 @@ def conv2d_manual_jax(x, weight, bias, stride=1, padding=1):
 
 if __name__ == "__main__":
     # Instantiate PyTorch model
-    H, W = 49, 49
+    H, W = 25, 25
     model = ConvModel(H, W, in_channels=3, out_channels=4, kernel_size=3, stride=1, padding=1)
     model.eval()
 
