@@ -19,8 +19,8 @@ class ConvModel(nn.Module):
         # TO DO: Define static shapes here. 
 
         # Precompute output size
-        # self.out_h = ...
-        # self.out_w = ...
+        self.out_h = (H + 2 * padding - kernel_size) // stride + 1 
+        self.out_w = (W + 2 * padding - kernel_size) // stride + 1 
 
         self.weight = nn.Parameter(torch.randn(out_channels, in_channels, kernel_size, kernel_size))
         self.bias = nn.Parameter(torch.zeros(out_channels))
@@ -39,11 +39,16 @@ class ConvModel(nn.Module):
         # Pad input
         x_pad = F.pad(x, (P, P, P, P))
 
-        # TO DO: Convert input (x) into shape (N, out_h*out_w, C*KH*KW). 
-        # Refer to Lecture 3 for implementing this operation.
-        
-        # patches = ...
-        # return patches
+        patches = []
+        for kh in range(KH):
+            for kw in range(KW):
+                patch = x_pad[:, :, kh : kh + out_h * S : S, kw : kw + out_w * S : S]
+                patches.append(patch)
+
+        stacked = torch.stack(patches, dim=2)
+        permuted = stacked.permute(0, 3, 4, 1, 2)
+        cols = permuted.reshape(N, out_h * out_w, C * KH * KW)
+        return cols
 
     def conv2d_manual(self, x):
         N = x.shape[0]
