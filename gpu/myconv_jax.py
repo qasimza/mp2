@@ -47,21 +47,38 @@ def conv2d_manual_jax(x, weight, bias, stride=1, padding=1):
     C_out, _, KH, KW = weight.shape
 
     # define your helper variables here
-    # out_h = ...
-    # out_w = ...
+    out_h = (H + 2 * padding - KH) // stride + 1
+    out_w = (W + 2 * padding - KW) // stride + 1
     
-    # TO DO: 1) convert input (x) into shape (N, out_h*out_w, C*KH*KW).
-    # cols = im2col_manual_jax(x, KH, KW, stride, padding, out_h, out_w)
+    # 1) convert input (x) into shape (N, out_h*out_w, C*KH*KW).
+    cols = im2col_manual_jax(x, KH, KW, stride, padding, out_h, out_w)
 
-    # TO DO: 2) flatten self.weight into shape (C_out, C*KH*KW).
+    # 2) flatten self.weight into shape (C_out, C*KH*KW).
+    flattened_weight = weight.reshape(C_out, C * KH * KW)
 
-    # TO DO: 3) perform tiled matmul after required reshaping is done.
+    # 3) perform tiled matmul after required reshaping is done.
+    L = cols.shape[1]
+    K = cols.shape[2]
+    tile = 16
+    weight_t = flattened_weight.T
+    out = jnp.zeros((N, L, C_out), dtype=cols.dtype)
+    for i in range(0, L, tile):
+        i_end = min(i + tile, L)
+        for j in range(0, C_out, tile):
+            j_end = min(j + tile, C_out)
+            acc = jnp.zeros((N, i_end - i, j_end - j), dtype=cols.dtype)
+            for k in range(0, K, tile):
+                k_end = min(k + tile, K)
+                acc = acc + jnp.matmul(cols[:, i:i_end, k:k_end], weight_t[k:k_end, j:j_end])
+            out = out.at[:, i:i_end, j:j_end].set(acc)
 
-    # TO DO: 4) Add bias.
+    # 4) Add bias.
+    out = out + bias
 
-    # TO DO: 5) reshape output into shape (N, C_out, out_h, out_w).
-
-    #return out
+    # 5) reshape output into shape (N, C_out, out_h, out_w).
+    out = out.reshape(N, out_h, out_w, C_out)
+    out = jnp.transpose(out, (0, 3, 1, 2))
+    return out
 
 if __name__ == "__main__":
     # Instantiate PyTorch model
