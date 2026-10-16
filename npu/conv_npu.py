@@ -122,13 +122,20 @@ def conv2d(X, W, bias):
                     w_slice_transposed = nisa.nc_transpose(w_slice)
                     w_sbuf[filter_height_idx, filter_width_idx, oc_tile_idx, ic_tile_idx] = nl.copy(w_slice_transposed, dtype=W.dtype)
 
+    strips = [
+        (first_row, min(output_rows_per_strip, out_height - first_row))
+        for first_row in range(0, out_height, output_rows_per_strip)
+    ]
+
     # Process the images in batches 
     for b in nl.affine_range(batch_size):
         
-        for first_row in range(0, out_height, output_rows_per_strip): 
-            
-            num_rows = min(output_rows_per_strip, out_height - first_row)
+        for first_row, num_rows in strips:
             num_input_rows = num_rows + filter_height - 1
+            groups = [
+                (group_first_row, min(output_rows_per_matmul, num_rows - group_first_row))
+                for group_first_row in range(0, num_rows, output_rows_per_matmul)
+            ]
             
             # Reserve space for this strip's input rows
             x_strip_sbuf = nl.ndarray(
@@ -158,8 +165,7 @@ def conv2d(X, W, bias):
                     buffer=nl.sbuf
                 )
 
-                for group_first_row in range(0, num_rows, output_rows_per_matmul):
-                    rows_in_group = min(output_rows_per_matmul, num_rows - group_first_row)
+                for group_first_row, rows_in_group in groups:
                     num_columns = rows_in_group * input_width - (filter_width - 1)
 
                     # Running total for this group, in PSUM
