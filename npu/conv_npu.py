@@ -29,7 +29,7 @@ def _preload_weights(W, n_tiles_c_out, n_tiles_c_in, filter_height, filter_width
 
     for oc in nl.affine_range(n_tiles_c_out):
         for ic in nl.affine_range(n_tiles_c_in):
-            # Contiguous load: partition = c_out, free = (c_in, kh, kw)
+            
             w_raw = nl.ndarray(
                 shape=(nl.par_dim(PARTITION_DIM), PARTITION_DIM,
                        filter_height, filter_width),
@@ -47,9 +47,9 @@ def _preload_weights(W, n_tiles_c_out, n_tiles_c_in, filter_height, filter_width
 
             for kh in nl.affine_range(filter_height):
                 for kw in nl.affine_range(filter_width):
-                    # Strided read is fine in SBUF: (c_out, c_in)
+                 
                     w_tap = nl.copy(w_raw[:, :, kh, kw])
-                    # Transpose to (c_in, c_out) so c_in is the contraction/partition dim
+                    
                     w_t = nisa.nc_transpose(w_tap)
                     w_sbuf[kh, kw, oc, ic] = nl.copy(w_t, dtype=W.dtype)
 
@@ -90,87 +90,82 @@ def conv2d(X, W, bias):
 
     The shape of the output should be [batch_size, out_channels, out_pool_height, out_pool_width]
 
-    """
+"""
 
     batch_size, in_channels, input_height, input_width = X.shape
-    out_channels, in_channels_, filter_height, filter_width = W.shape
-    out_channels_ = bias.shape[0]
-
-    assert (
-        in_channels_ == in_channels and out_channels_ == out_channels
-    ), f"Shape mismatch. {in_channels}, {in_channels_}, {out_channels}, {out_channels_}"
-
+    out_channels, _, filter_height, filter_width = W.shape
     out_height = input_height - filter_height + 1
     out_width = input_width - filter_width + 1
 
-    out_pool_height = out_height
-    out_pool_width = out_width
+    assert in_channels % PARTITION_DIM == 0 and out_channels % PARTITION_DIM == 0
+    n_ic = in_channels // PARTITION_DIM
+    n_oc = out_channels // PARTITION_DIM
 
-    # Can assume multiple of 128 to avoid using mask
-    assert in_channels % PARTITION_DIM == 0
-    assert out_channels % PARTITION_DIM == 0
+    # rows of output per matmul group (N = r*W - (KW-1) must be <= 512)
+    R = (MOVING_FREE_MAX + filter_width - 1) // input_width
+    assert R >= 1
+    BAND = 32  # output rows per band; tune for SBUF budget
 
-    # Can assume one PSUM bank can at least fit one row of the pixels
-    assert MOVING_FREE_MAX >= out_width
-
-    # Initialize output array
     X_out = nl.ndarray(
-        shape=(batch_size, out_channels, out_pool_height, out_pool_width),
-        dtype=X.dtype,
-        buffer=nl.hbm,
+        (batch_size, out_channels, out_height, out_width),
+        dtype=X.dtype, buffer=nl.hbm,
     )
+    X_flat = X.reshape((batch_size, in_channels, input_height * input_width))
 
-    # Various tiling dimensions (You may want to define more of them)
-    c_in_pmax = PARTITION_DIM
-    n_tiles_c_in = in_channels // c_in_pmax
-    n_tiles_c_out = out_channels // PARTITION_DIM
-    w_sbuf = _preload_weights(
-        W, n_tiles_c_out, n_tiles_c_in, filter_height, filter_width
-    )
+    w_sbuf = _preload_weights(W, n_oc, n_ic, filter_height, filter_width)
+
+    # Bias: load once
     bias_2d = bias.reshape((out_channels, 1))
+    bias_sb = nl.ndarray((n_oc, nl.par_dim(PARTITION_DIM), 1), dtype=bias.dtype, buffer=nl.sbuf)
+    for oc in nl.affine_range(n_oc):
+        bias_sb[oc] = nl.load(bias_2d[oc * PARTITION_DIM:(oc + 1) * PARTITION_DIM, :])
 
-    # Process the images in batches
     for b in nl.affine_range(batch_size):
-        for oc in nl.affine_range(n_tiles_c_out):
-            for oh in nl.affine_range(out_height):
-                # PSUM accumulates in float32. Copy casts back to X.dtype.
-                res_psum = nl.zeros(
-                    (PARTITION_DIM, out_width), nl.float32, buffer=nl.psum
+        for row0 in range(0, out_height, BAND):          # unrolled at trace time
+            nrows = min(BAND, out_height - row0)
+            in_rows = nrows + filter_height - 1
+
+            # One input band, all ic tiles, flat (rows*W) free dim
+            x_band = nl.ndarray(
+                (n_ic, nl.par_dim(PARTITION_DIM), in_rows * input_width),
+                dtype=X.dtype, buffer=nl.sbuf,
+            )
+            for ic in nl.affine_range(n_ic):
+                x_band[ic] = nl.load(
+                    X_flat[b, ic * PARTITION_DIM:(ic + 1) * PARTITION_DIM,
+                           row0 * input_width:(row0 + in_rows) * input_width]
                 )
 
-                for kh in nl.affine_range(filter_height):
-                    for kw in nl.affine_range(filter_width):
-                        for ic in nl.affine_range(n_tiles_c_in):
-                            # Shifted input row: pixel (oh, ow) reads X[:, oh + kh, ow + kw].
-                            x_tile = nl.ndarray(
-                                shape=(nl.par_dim(c_in_pmax), out_width),
-                                dtype=X.dtype,
-                                buffer=nl.sbuf,
-                            )
-                            x_tile[...] = nl.load(
-                                X[
-                                    b,
-                                    ic * c_in_pmax:(ic + 1) * c_in_pmax,
-                                    oh + kh,
-                                    kw:kw + out_width,
-                                ]
-                            )
-                            res_psum += nl.matmul(
-                                w_sbuf[kh, kw, oc, ic],
-                                x_tile,
-                                transpose_x=True,
-                            )
+            for oc in nl.affine_range(n_oc):
+                o_sb = nl.ndarray(
+                    (nl.par_dim(PARTITION_DIM), nrows, out_width), dtype=X.dtype, buffer=nl.sbuf
+                )
+                for r0 in range(0, nrows, R):
+                    r = min(R, nrows - r0)
+                    N = r * input_width - (filter_width - 1)
+                    res_psum = nl.zeros((PARTITION_DIM, N), nl.float32, buffer=nl.psum)
 
-                row = nl.copy(res_psum, dtype=X.dtype)
-                row = _add_bias(row, bias_2d, oc)
+                    for kh in nl.affine_range(filter_height):
+                        for kw in nl.affine_range(filter_width):
+                            for ic in nl.affine_range(n_ic):
+                                start = (r0 + kh) * input_width + kw
+                                res_psum += nl.matmul(
+                                    w_sbuf[kh, kw, oc, ic],
+                                    x_band[ic][:, start:start + N],
+                                    transpose_x=True,
+                                )
+
+                    # Evacuate PSUM -> SBUF, add bias, cast; drop garbage columns
+                    for i in range(r):
+                        o_sb[:, r0 + i, :] = nl.add(
+                            res_psum[:, i * input_width:i * input_width + out_width],
+                            bias_sb[oc],
+                            dtype=X.dtype,
+                        )
+
                 nl.store(
-                    X_out[
-                        b,
-                        oc * PARTITION_DIM:(oc + 1) * PARTITION_DIM,
-                        oh,
-                        0:out_width,
-                    ],
-                    value=row,
+                    X_out[b, oc * PARTITION_DIM:(oc + 1) * PARTITION_DIM, row0:row0 + nrows, :],
+                    value=o_sb,
                 )
 
     return X_out
