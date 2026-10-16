@@ -13,8 +13,7 @@ MOVING_FREE_MAX = nl.tile_size.gemm_moving_fmax
 
 
 def _preload_weights(W, n_tiles_c_out, n_tiles_c_in, filter_height, filter_width):
-    """Load every filter tap into SBUF as a (K, M) tile.
-    """
+    """Load every filter tap into SBUF as a (K=c_in, M=c_out) tile."""
     w_sbuf = nl.ndarray(
         shape=(
             filter_height,
@@ -28,25 +27,31 @@ def _preload_weights(W, n_tiles_c_out, n_tiles_c_in, filter_height, filter_width
         buffer=nl.sbuf,
     )
 
-    for kh in nl.affine_range(filter_height):
-        for kw in nl.affine_range(filter_width):
-            for oc in nl.affine_range(n_tiles_c_out):
-                for ic in nl.affine_range(n_tiles_c_in):
-  
-                    w_mk = nl.ndarray(
-                        shape=(nl.par_dim(PARTITION_DIM), PARTITION_DIM),
-                        dtype=W.dtype,
-                        buffer=nl.sbuf,
-                    )
-                    w_mk[...] = nl.load(
-                        W[
-                            oc * PARTITION_DIM:(oc + 1) * PARTITION_DIM,
-                            ic * PARTITION_DIM:(ic + 1) * PARTITION_DIM,
-                            kh,
-                            kw,
-                        ]
-                    )
-                    w_sbuf[kh, kw, oc, ic] = nisa.dma_transpose(w_mk)
+    for oc in nl.affine_range(n_tiles_c_out):
+        for ic in nl.affine_range(n_tiles_c_in):
+            # Contiguous load: partition = c_out, free = (c_in, kh, kw)
+            w_raw = nl.ndarray(
+                shape=(nl.par_dim(PARTITION_DIM), PARTITION_DIM,
+                       filter_height, filter_width),
+                dtype=W.dtype,
+                buffer=nl.sbuf,
+            )
+            w_raw[...] = nl.load(
+                W[
+                    oc * PARTITION_DIM:(oc + 1) * PARTITION_DIM,
+                    ic * PARTITION_DIM:(ic + 1) * PARTITION_DIM,
+                    :,
+                    :,
+                ]
+            )
+
+            for kh in nl.affine_range(filter_height):
+                for kw in nl.affine_range(filter_width):
+                    # Strided read is fine in SBUF: (c_out, c_in)
+                    w_tap = nl.copy(w_raw[:, :, kh, kw])
+                    # Transpose to (c_in, c_out) so c_in is the contraction/partition dim
+                    w_t = nisa.nc_transpose(w_tap)
+                    w_sbuf[kh, kw, oc, ic] = nl.copy(w_t, dtype=W.dtype)
 
     return w_sbuf
 
