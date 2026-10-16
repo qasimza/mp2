@@ -101,10 +101,9 @@ def conv2d(X, W, bias):
     n_ic = in_channels // PARTITION_DIM
     n_oc = out_channels // PARTITION_DIM
 
-    # rows of output per matmul group (N = r*W - (KW-1) must be <= 512)
     R = (MOVING_FREE_MAX + filter_width - 1) // input_width
     assert R >= 1
-    BAND = 32  # output rows per band; tune for SBUF budget
+    BAND = 32 
 
     X_out = nl.ndarray(
         (batch_size, out_channels, out_height, out_width),
@@ -114,18 +113,18 @@ def conv2d(X, W, bias):
 
     w_sbuf = _preload_weights(W, n_oc, n_ic, filter_height, filter_width)
 
-    # Bias: load once
     bias_2d = bias.reshape((out_channels, 1))
     bias_sb = nl.ndarray((n_oc, nl.par_dim(PARTITION_DIM), 1), dtype=bias.dtype, buffer=nl.sbuf)
     for oc in nl.affine_range(n_oc):
         bias_sb[oc] = nl.load(bias_2d[oc * PARTITION_DIM:(oc + 1) * PARTITION_DIM, :])
 
-    for b in nl.affine_range(batch_size):
-        for row0 in range(0, out_height, BAND):          # unrolled at trace time
-            nrows = min(BAND, out_height - row0)
-            in_rows = nrows + filter_height - 1
+    bands = [(r0, min(BAND, out_height - r0)) for r0 in range(0, out_height, BAND)]
 
-            # One input band, all ic tiles, flat (rows*W) free dim
+    for b in range(batch_size):
+        for (row0, nrows) in bands:
+            in_rows = nrows + filter_height - 1
+            groups = [(r0, min(R, nrows - r0)) for r0 in range(0, nrows, R)]
+
             x_band = nl.ndarray(
                 (n_ic, nl.par_dim(PARTITION_DIM), in_rows * input_width),
                 dtype=X.dtype, buffer=nl.sbuf,
@@ -140,8 +139,7 @@ def conv2d(X, W, bias):
                 o_sb = nl.ndarray(
                     (nl.par_dim(PARTITION_DIM), nrows, out_width), dtype=X.dtype, buffer=nl.sbuf
                 )
-                for r0 in range(0, nrows, R):
-                    r = min(R, nrows - r0)
+                for (r0, r) in groups:
                     N = r * input_width - (filter_width - 1)
                     res_psum = nl.zeros((PARTITION_DIM, N), nl.float32, buffer=nl.psum)
 
@@ -155,7 +153,6 @@ def conv2d(X, W, bias):
                                     transpose_x=True,
                                 )
 
-                    # Evacuate PSUM -> SBUF, add bias, cast; drop garbage columns
                     for i in range(r):
                         o_sb[:, r0 + i, :] = nl.add(
                             res_psum[:, i * input_width:i * input_width + out_width],
